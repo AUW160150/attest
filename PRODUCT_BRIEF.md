@@ -1,6 +1,6 @@
 # Product Brief — Harven Data Rescue (Track 01)
 
-**Team:** _[add team name + members/roles]_ · **Track:** 01 — Data Rescue · **Date:** 2026-06-07
+**Team:** Harven Data Rescue (solo — rodela, Builder) · **Track:** 01 — Data Rescue · **Date:** 2026-06-07
 
 ## The user
 **The compliance officer who has never opened a database.** Four days before a regulatory audit,
