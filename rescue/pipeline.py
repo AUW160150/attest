@@ -19,6 +19,7 @@ from .agent_find import find_issues
 from .agent_rank import rank
 from .agent_act import act
 from .agent_explain import explain
+from .agent_execute import execute_auto_fixes
 
 console = Console()
 
@@ -28,28 +29,35 @@ def run() -> dict:
     console.print(f"[dim]memory backend: {mem.backend}[/dim]")
     records, customers = load_records(), load_customers()
 
-    console.print(Rule("Agent 1 · Find It"))
+    console.print(Rule("Issue Detector"))
     findings = find_issues(records, customers)
     mem.write("findings", findings)
     console.print(f"found [bold]{len(findings)}[/bold] issues → memory['findings']")
 
-    console.print(Rule("Agent 2 · Rank It"))
-    ranked = rank(mem.read("findings"))          # reads Agent 1 from memory
+    console.print(Rule("Risk Prioritizer"))
+    ranked = rank(mem.read("findings"))          # reads the Detector from memory
     mem.write("ranked", ranked)
     sev = collections.Counter(f["severity_label"] for f in ranked)
     console.print(f"prioritized worst-first → memory['ranked']  ({dict(sev)})")
 
-    console.print(Rule("Agent 3 · Act On It"))
-    acted = act(mem.read("ranked"))              # reads Agent 2 from memory
+    console.print(Rule("Remediation Planner"))
+    acted = act(mem.read("ranked"))              # reads the Prioritizer from memory
     mem.write("acted", acted)
     actc = collections.Counter(f["action"] for f in acted)
     console.print(f"assigned actions → memory['acted']  ({dict(actc)})")
 
-    console.print(Rule("Agent 4 · Explain It"))
-    md, stats = explain(mem.read("acted"), len(records))   # reads Agent 3 from memory
+    console.print(Rule("Audit Reporter"))
+    md, stats = explain(mem.read("acted"), len(records))   # reads the Planner from memory
     mem.write("summary_stats", stats)
     console.print(f"wrote signable summary → [green]output/audit_summary.md[/green] "
                   f"({len(md)} chars)")
+
+    console.print(Rule("Remediation Executor · Take Action"))
+    cleaned, fix_log = execute_auto_fixes(records, mem.read("acted"))   # reads the Planner from memory
+    mem.write("executed", {"removed": len(fix_log), "cleaned_rows": len(cleaned),
+                           "original_rows": len(records)})
+    console.print(f"applied [bold]{len(fix_log)}[/bold] safe auto-fixes → cleaned dataset "
+                  f"{len(records):,} → {len(cleaned):,} rows → [green]data/track01_cleaned.csv[/green]")
 
     console.print(Rule("Done"))
     console.print(f"[bold]{len(records):,}[/bold] records · [bold]{len(acted)}[/bold] issues · "

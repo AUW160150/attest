@@ -12,12 +12,13 @@ import collections
 import html
 import json
 
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, Form
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 
 from . import config
 from .load import load_records, load_customers
 from .memory import Memory
+from .agent_execute import propose_fix
 
 app = FastAPI(title="Harven Data Rescue")
 
@@ -87,6 +88,21 @@ th{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#78716C;ba
 .filters{margin:10px 0}.filters button{margin-right:6px;padding:5px 12px;border:1px solid #E7E5E0;border-radius:20px;background:#fff;cursor:pointer;font:inherit;font-size:13px}
 .filters button.on{background:#1C1917;color:#fff;border-color:#1C1917}
 .hidden{display:none}
+.agent{cursor:pointer}
+.chev{color:#0D9488;font-size:12px;display:inline-block;transition:.2s;margin-left:4px}
+.agent.open .chev{transform:rotate(90deg)}
+.detail{display:none;margin-top:12px;border-top:1px dashed #E7E5E0;padding-top:10px}
+.agent.open .detail{display:block}
+.drow{display:flex;gap:12px;padding:5px 0;font-size:13px;align-items:flex-start}
+.drow>b{min-width:130px;color:#57534E;font-weight:600;flex-shrink:0}
+.drow>span{flex:1;color:#1C1917}
+.drow ul{margin:0;padding-left:16px}.drow li{margin:2px 0;color:#57534E}
+.hint{color:#A8A29E;font-size:12px;margin-top:6px}
+.sel,.inp{padding:9px 12px;border:1px solid #E7E5E0;border-radius:9px;font:14px 'DM Sans';background:#fff}
+.inp{flex:1;min-width:260px}
+#autoout{margin-top:14px}
+#autoout .proposal{background:#F8FAF9;border:1px solid #D7E5E2;border-radius:12px;padding:14px 16px}
+#autoout pre{white-space:pre-wrap;font:13px/1.5 'DM Mono',monospace;color:#1C1917;margin-top:8px}
 """
 
 JS = """
@@ -112,6 +128,25 @@ function runPipeline(){
   }
   step();
 }
+function toggleDetail(id){
+  const d=document.getElementById('detail-'+id);
+  if(d){d.closest('.agent').classList.toggle('open');}
+}
+function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+async function automate(){
+  const cat=document.getElementById('autocat').value;
+  const ins=document.getElementById('autoinp').value;
+  const out=document.getElementById('autoout');
+  if(!ins.trim()){out.innerHTML='<div class="hint">Type how you\\'d fix these first.</div>';return;}
+  out.innerHTML='<div class="hint"><span class="spinner"></span> turning your instruction into a fix rule…</div>';
+  try{
+    const r=await fetch('/automate',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'category='+encodeURIComponent(cat)+'&instruction='+encodeURIComponent(ins)});
+    const d=await r.json();
+    out.innerHTML='<div class="proposal"><b>'+esc(d.category)+'</b> · '+d.affected+
+      ' records affected<pre>'+esc(d.proposal)+'</pre></div>';
+  }catch(e){out.innerHTML='<div class="hint">Could not reach the model. Check the API key.</div>';}
+}
 function flt(btn,kind,val){
   document.querySelectorAll('.filters button').forEach(b=>b.classList.remove('on'));
   btn.classList.add('on');
@@ -126,7 +161,10 @@ function flt(btn,kind,val){
 def index_page() -> str:
     records, customers = load_records(), load_customers()
     mem = Memory()
+    findings = mem.read("findings") or []
+    ranked = mem.read("ranked") or []
     acted = mem.read("acted") or []
+    executed = mem.read("executed") or {}
     total = len(records)
     plants = sorted({r["plant_id"] for r in records})
     crit = sum(1 for f in acted if f["severity_label"] == "critical")
@@ -154,25 +192,96 @@ def index_page() -> str:
     geodo_html = "<br>".join(html.escape(l) for l in geodo_txt.splitlines()) if geodo_txt else \
         "Add your Geodo findings to <span class='mono'>data/geodo_notes.md</span>."
 
-    # --- agent flow ---
-    agents = [
-        ("🔎", "Agent 1 · Find It", "Reads all the records and flags what's wrong, with a reason for each.",
-         f"{len(acted)} issues found"),
-        ("📊", "Agent 2 · Rank It", "Sorts the problems worst-first, and says why each ranks where it does.",
-         f"{crit} critical · {high} high"),
-        ("🛠️", "Agent 3 · Act On It", "Decides what to do with each: fix, flag for a person, or escalate.",
-         f"{fix} auto-fixable · rest flagged"),
-        ("📝", "Agent 4 · Explain It", "Writes a one-page summary the officer can read, sign, and download.",
-         "signed audit memo ready"),
+    # --- agent flow (functional names + full per-agent trace) ---
+    # samples pulled from the real run
+    det_s = [f["reason"] for f in findings[:3]]
+    pri_s = [f'{f["severity_label"].upper()} (rank {f.get("rank","?")}) — {f["reason"][:70]} · why: {f["rank_reason"]}'
+             for f in ranked[:2]]
+    rem_s = [f'{f["action"].upper()} {f["record_id"]}: {f["action_detail"]}' for f in acted[:2]]
+    # reporter sample: first couple of substantive lines of the summary
+    sum_path = config.OUTPUT / "audit_summary.md"
+    rep_s = []
+    if sum_path.exists():
+        for ln in sum_path.read_text(encoding="utf-8").splitlines():
+            s = ln.strip()
+            if s and not s.startswith("#") and not s.startswith("*") and not s.startswith("---"):
+                rep_s.append(s)
+            if len(rep_s) >= 2:
+                break
+
+    AG = [
+        {"id": "detector", "ic": "🔎", "name": "Issue Detector",
+         "role": "Scans every record and flags what's wrong, with a reason for each.",
+         "out": f"{len(acted)} issues found",
+         "tool": "Ran 7 deterministic integrity checks across all rows: orphaned customer refs, "
+                 "impossible values, ship-before-production, future dates, duplicates, weight/unit "
+                 "outliers, attribute conflicts.",
+         "inp": f"5,000 raw warehouse records + the {len(customers)}-row customer master.",
+         "outp": f"{len(findings)} findings — each with record id, category, the bad value, and a plain reason.",
+         "handoff": "Writes memory['findings'] → read by the Risk Prioritizer.",
+         "why": "Deterministic checks make every finding auditable — never \"the model said so\".",
+         "samples": det_s},
+        {"id": "prioritizer", "ic": "📊", "name": "Risk Prioritizer",
+         "role": "Sorts the problems worst-first and explains every ranking.",
+         "out": f"{crit} critical · {high} high",
+         "tool": "Scored each finding: base severity by category, +1 when the bad record already "
+                 "shipped/completed (the error likely escaped before the audit).",
+         "inp": f"memory['findings'] — {len(findings)} issues from the Issue Detector.",
+         "outp": f"Same issues ranked 1..{len(acted)} with a severity label + a reason for the rank.",
+         "handoff": "Writes memory['ranked'] → read by the Remediation Planner.",
+         "why": "A compliance officer has minutes — surface what can hurt the audit first.",
+         "samples": pri_s},
+        {"id": "remediator", "ic": "🛠️", "name": "Remediation Planner",
+         "role": "Decides what to do with each issue: fix, flag, or escalate.",
+         "out": f"{fix} auto-fixable · rest flagged/escalated",
+         "tool": "Mapped each category to an action policy (duplicate→fix, impossible value→flag, "
+                 "orphaned customer→escalate, …) with a concrete next step.",
+         "inp": f"memory['ranked'] — {len(acted)} ranked issues.",
+         "outp": "Each issue tagged fix / flag / escalate with what to do.",
+         "handoff": "Writes memory['acted'] → read by the Audit Reporter.",
+         "why": "Separates what software can safely fix from what needs a human decision.",
+         "samples": rem_s},
+        {"id": "reporter", "ic": "📝", "name": "Audit Reporter",
+         "role": "Writes a one-page summary the officer can read, sign, and download.",
+         "out": "signed audit memo ready",
+         "tool": "Tool call → Claude (claude-sonnet-4-6): a plain-language narrative written over the "
+                 "agents' real numbers (no invented figures).",
+         "inp": "memory['acted'] + the tallies (by severity, category, action).",
+         "outp": "output/audit_summary.md — bottom line, what we checked, findings, actions, sign-off.",
+         "handoff": "Downloadable from the product — the officer signs it.",
+         "why": "The end user can't read SQL; they need a memo they can hand to auditors.",
+         "samples": rep_s},
+        {"id": "executor", "ic": "✅", "name": "Remediation Executor",
+         "role": "Applies the safe fixes and hands the rest to a human — see the Take action step.",
+         "out": f"{fix} auto-fixed · cleaned dataset ready",
+         "tool": "Removed duplicate rows automatically; left flag/escalate items for a person. Can also "
+                 "turn a human's plain-language instruction into an automated fix rule.",
+         "inp": "memory['acted'] + the original 5,000 records.",
+         "outp": f"data/track01_cleaned.csv ({executed.get('original_rows', total):,} → "
+                 f"{executed.get('cleaned_rows', total - fix):,} rows) + a fix log.",
+         "handoff": "Cleaned dataset + human-in-the-loop automation in the Take action step.",
+         "why": "Software should only auto-apply what's provably safe; the rest needs a human's call.",
+         "samples": [f"removed {fix} duplicate rows automatically",
+                     "flag/escalate items wait for human review"]},
     ]
     flow = ""
-    for ic, name, role, out in agents:
-        flow += (f'<div class="agent" data-out="{html.escape(out)}">'
-                 f'<div class="ic">{ic}</div><div style="flex:1">'
-                 f'<h3>{name}</h3><div class="role">{role}</div>'
-                 f'<div class="out"></div>'
-                 f'<div class="mem">↕ reads &amp; writes the shared memory layer (Cognee)</div>'
-                 f'</div></div>')
+    for a in AG:
+        samp = "".join(f"<li>{html.escape(str(s))}</li>" for s in a["samples"]) or "<li>(run the pipeline)</li>"
+        flow += (
+            f'<div class="agent" data-out="{html.escape(a["out"])}" onclick="toggleDetail(\'{a["id"]}\')">'
+            f'<div class="ic">{a["ic"]}</div><div style="flex:1">'
+            f'<h3>{html.escape(a["name"])} <span class="chev">▸</span></h3>'
+            f'<div class="role">{html.escape(a["role"])}</div>'
+            f'<div class="out"></div>'
+            f'<div class="mem">↕ reads &amp; writes the shared memory layer (Cognee)</div>'
+            f'<div class="detail" id="detail-{a["id"]}">'
+            f'<div class="drow"><b>Tool / operation</b><span>{html.escape(a["tool"])}</span></div>'
+            f'<div class="drow"><b>Input</b><span>{html.escape(a["inp"])}</span></div>'
+            f'<div class="drow"><b>Output</b><span>{html.escape(a["outp"])}</span></div>'
+            f'<div class="drow"><b>Handoff to next</b><span>{html.escape(a["handoff"])}</span></div>'
+            f'<div class="drow"><b>Analysis &amp; why</b><span>{html.escape(a["why"])}</span></div>'
+            f'<div class="drow"><b>Examples</b><span><ul>{samp}</ul></span></div>'
+            f'</div></div></div>')
 
     # --- results worklist (top 60) ---
     rows = ""
@@ -185,6 +294,11 @@ def index_page() -> str:
                  f'<td>{html.escape(f["reason"])}</td>'
                  f'<td><span class="pill" style="background:{ac}">{f["action"]}</span><br>'
                  f'<span class="muted">{html.escape(f["action_detail"])}</span></td></tr>')
+
+    # --- take-action step data ---
+    clean_rows = executed.get("cleaned_rows", total - fix)
+    human_cats = sorted({f["category"] for f in acted if f["action"] in ("flag", "escalate")})
+    cat_options = "".join(f'<option value="{c}">{c.replace("_"," ")}</option>' for c in human_cats)
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -199,8 +313,9 @@ def index_page() -> str:
 <div class="wrap">
   <div class="steps">
     <div class="step on" onclick="go(0)"><span class="n">1</span><b>See the data</b><span>what we're working with</span></div>
-    <div class="step" onclick="go(1)"><span class="n">2</span><b>Watch the agents</b><span>4 agents, step by step</span></div>
+    <div class="step" onclick="go(1)"><span class="n">2</span><b>Watch the agents</b><span>5 agents, step by step</span></div>
     <div class="step" onclick="go(2)"><span class="n">3</span><b>Review & sign</b><span>worklist + summary</span></div>
+    <div class="step" onclick="go(3)"><span class="n">4</span><b>Take action</b><span>fix + automate</span></div>
   </div>
 
   <!-- STEP 1: DATA -->
@@ -238,6 +353,7 @@ def index_page() -> str:
       <div class="muted">Each agent does one job and passes its work to the next through a shared
         memory layer. Press play to watch.</div>
       <div style="margin:14px 0"><button class="btn" onclick="runPipeline()">▶ Run the rescue</button></div>
+      <div class="hint">Tip: click any agent to see exactly what it did — its tool call, input, output, and what it handed to the next agent.</div>
       <div class="flow">{flow}</div>
       <div id="toResults" class="hidden" style="margin-top:16px">
         <button class="btn" onclick="go(2)">See the results →</button>
@@ -268,6 +384,35 @@ def index_page() -> str:
       <tbody>{rows}</tbody></table>
       <div class="muted" style="margin-top:8px">Showing the top 60 of {len(acted)}, worst first.</div>
     </div>
+    <button class="btn" onclick="go(3)">Next: take action →</button>
+  </div>
+
+  <!-- STEP 4: TAKE ACTION -->
+  <div class="pane">
+    <div class="card">
+      <h2>Apply the safe fixes</h2>
+      <div class="muted">The {fix} duplicate records are safe to remove automatically. Everything
+        else needs your judgment — that's the next card.</div>
+      <div class="grid">
+        <div class="kpi"><b>{total:,}</b><span>original rows</span></div>
+        <div class="kpi"><b style="color:#059669">{clean_rows:,}</b><span>after auto-fix</span></div>
+        <div class="kpi"><b>{fix}</b><span>duplicates removed</span></div>
+        <div class="kpi" style="margin-left:auto;display:flex;align-items:center">
+          <a class="btn dl" href="/download-clean">⬇ Download cleaned dataset</a></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>🧑‍🔧 Automate a fix <span class="muted" style="font-weight:400">— human in the loop</span></h2>
+      <div class="muted">For the issues that need a person, describe in plain language how you'd fix
+        them. An expert stays in control — we turn your instruction into a concrete, previewable rule
+        and flag anything too risky to auto-apply.</div>
+      <div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap;align-items:center">
+        <select id="autocat" class="sel">{cat_options}</select>
+        <input id="autoinp" class="inp" placeholder="e.g. if weight is ~1000x the usual for that part, it's a unit typo — divide by 1000">
+        <button class="btn" onclick="automate()">Propose automated fix</button>
+      </div>
+      <div id="autoout"></div>
+    </div>
   </div>
 </div>
 <script>{JS}</script>
@@ -283,6 +428,22 @@ def index():
 def download():
     return FileResponse(config.OUTPUT / "audit_summary.md", media_type="text/markdown",
                         filename="Harven_Audit_Summary.md")
+
+
+@app.get("/download-clean")
+def download_clean():
+    return FileResponse(config.DATA / "track01_cleaned.csv", media_type="text/csv",
+                        filename="track01_cleaned.csv")
+
+
+@app.post("/automate")
+def automate(category: str = Form(...), instruction: str = Form("")):
+    acted = Memory().read("acted") or []
+    try:
+        return JSONResponse(propose_fix(category, instruction, acted))
+    except Exception as e:
+        return JSONResponse({"category": category, "affected": 0,
+                             "proposal": f"Could not generate a fix: {e}"}, status_code=200)
 
 
 def main():

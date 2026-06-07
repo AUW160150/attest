@@ -3,4 +3,7 @@ rich>=13.0
 fastapi>=0.110
 uvicorn>=0.30
 python-multipart>=0.0.9
-cognee
+# Cognee is the memory layer but is NOT required to run the demo: memory.py falls back to a JSON
+# store and the team uses a static cognee CLI at runtime. Installing the cognee python package
+# pins older http libs that break the anthropic client, so it is intentionally left out of the
+# base install. To enable the SDK path in a separate env:  pip install "httpx<0.28" cognee
