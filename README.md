@@ -1,4 +1,6 @@
-# Harven Data Rescue — M-AGENTS Hackathon (Track 01)
+# Attest — M-AGENTS Hackathon (Track 01)
+
+*Find, fix, and explain broken data before your audit.* (Demo client: Harven Manufacturing.)
 
 A pre-audit data-integrity tool for **the compliance officer who has never opened a database.**
 Four agents find, rank, act on, and explain broken warehouse data — every decision in plain

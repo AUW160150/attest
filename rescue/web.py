@@ -20,7 +20,7 @@ from .load import load_records, load_customers
 from .memory import Memory
 from .agent_execute import propose_fix
 
-app = FastAPI(title="Harven Data Rescue")
+app = FastAPI(title="Attest")
 
 SEV = {"critical": "#DC2626", "high": "#D97706", "medium": "#CA8A04", "low": "#78716C"}
 ACT = {"fix": "#059669", "flag": "#D97706", "escalate": "#DC2626"}
@@ -302,13 +302,13 @@ def index_page() -> str:
 
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Harven Data Rescue</title>
+<title>Attest — find, fix, and explain broken data</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&family=Playfair+Display:wght@500;600&display=swap" rel="stylesheet">
 <style>{CSS}</style></head><body>
 <header><div class="wrap">
-  <h1>Harven Data Rescue</h1>
-  <p>Four days before the audit, your warehouse data can't be trusted. This finds every problem,
-     explains it in plain words, and tells you what to do — no database knowledge needed.</p>
+  <h1>Attest <span style="font-weight:400;color:#9DB2CE;font-size:16px">· find, fix &amp; explain broken data before your audit</span></h1>
+  <p>Demo: Harven Manufacturing, four days before a regulatory audit. Attest finds every problem,
+     explains it in plain words, tells you what to do — and fixes what's safe. No database knowledge needed.</p>
 </div></header>
 <div class="wrap">
   <div class="steps">

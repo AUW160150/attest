@@ -1,6 +1,7 @@
-# Product Brief — Harven Data Rescue (Track 01)
+# Product Brief — Attest (Track 01)
 
-**Team:** Harven Data Rescue (solo — rodela, Builder) · **Track:** 01 — Data Rescue · **Date:** 2026-06-07
+**Product:** Attest — *find, fix, and explain broken data before your audit.*
+**Team:** rodela (Builder) · **Demo client:** Harven Manufacturing · **Track:** 01 — Data Rescue · **Date:** 2026-06-07
 
 ## The user
 **The compliance officer who has never opened a database.** Four days before a regulatory audit,
